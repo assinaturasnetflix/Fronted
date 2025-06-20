@@ -59,7 +59,7 @@ io.use(async (socket, next) => {
             const decoded = jwt.verify(token, process.env.JWT_SECRET);
             const user = await User.findById(decoded.id).select('_id');
             if (user) {
-                socket.userId = user._id.toString();
+                socket.userId = user._id.toString(); // Anexa o ID do usuário ao socket
                 return next();
             }
         } catch (error) {
@@ -78,6 +78,10 @@ io.on('connection', (socket) => {
 
     // Registra o socketId no banco para mensagens diretas
     User.findByIdAndUpdate(socket.userId, { socketId: socket.id }).exec();
+    
+    // Faz o socket entrar em uma sala com seu próprio ID de usuário.
+    // Isso permite enviar mensagens diretas para um usuário específico.
+    socket.join(socket.userId);
     
     // ================== EVENTOS DO LOBBY ==================
     socket.on('joinLobby', () => {
@@ -101,18 +105,15 @@ io.on('connection', (socket) => {
             
             socket.join(gameId);
 
-            // Adiciona o jogador à sala no nosso mapeamento
             if (!gameRooms[gameId]) gameRooms[gameId] = new Set();
             gameRooms[gameId].add(socket.userId);
 
             console.log(`Usuário ${socket.userId} entrou na sala do jogo: ${gameId}. Jogadores na sala: ${gameRooms[gameId].size}`);
 
-            // Envia o status atual da sala para TODOS na sala
             const connectedUsers = Array.from(gameRooms[gameId]);
             io.to(gameId).emit('roomStatus', { connectedUsers });
 
-            // Se SÓ UM jogador está na sala, inicia o cronômetro para ele
-            if (gameRooms[gameId].size === 1) {
+            if (gameRooms[gameId].size === 1 && game.status === 'waiting_players') {
                 socket.emit('startCountdown');
             }
 
@@ -123,9 +124,7 @@ io.on('connection', (socket) => {
     });
     
     socket.on('playersReady', async ({ gameId }) => {
-        // Confirma no banco de dados que o jogo pode começar
         await Game.findByIdAndUpdate(gameId, { status: 'ongoing' });
-        // Notifica todos na sala para irem para a tela de jogo
         io.to(gameId).emit('startGame');
     });
 
@@ -145,8 +144,7 @@ io.on('connection', (socket) => {
     socket.on('cancelGameByTimeout', async ({ gameId }) => {
         console.log(`Jogo ${gameId} cancelado por timeout.`);
         const game = await Game.findById(gameId);
-        if (game && (game.status === 'waiting_players' || game.status === 'ongoing')) {
-            // Devolve o dinheiro para os jogadores
+        if (game && (game.status === 'waiting_players')) {
             const session = await mongoose.startSession();
             session.startTransaction();
             try {
@@ -172,7 +170,7 @@ io.on('connection', (socket) => {
         console.log(`🔌 Cliente desconectado: ${socket.id} (Usuário: ${socket.userId})`);
         if (socket.userId) {
             User.findByIdAndUpdate(socket.userId, { socketId: null }).exec();
-            // Limpa o usuário das salas de jogo se ele desconectar
+            
             for (const gameId in gameRooms) {
                 if (gameRooms[gameId].has(socket.userId)) {
                     gameRooms[gameId].delete(socket.userId);

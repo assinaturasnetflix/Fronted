@@ -260,7 +260,7 @@ const handlePlayerMove = async (io, socket, data) => {
 };
 
 const finishGame = async (io, game, winnerId, loserId, reason) => {
-    if (game.status === 'finished') return; // Previne finalização dupla
+    if (game.status === 'finished') return;
     const session = await mongoose.startSession();
     session.startTransaction();
     try {
@@ -345,10 +345,9 @@ const handleAcceptChallenge = async (io, socket, data) => {
 
         io.to('lobby_room').emit('lobby_room_removed', lobbyId);
 
-        io.to(socket.id).emit('gameChallengeAccepted', { gameId: newGame._id });
-        if (creator.socketId) {
-            io.to(creator.socketId).emit('gameChallengeAccepted', { gameId: newGame._id });
-        }
+        // Notifica ambos os jogadores para irem para a tela de versus, usando a sala pessoal de cada um
+        io.to(lobby.creator.toString()).emit('gameChallengeAccepted', { gameId: newGame._id });
+        io.to(challengerId).emit('gameChallengeAccepted', { gameId: newGame._id });
 
     } catch (error) {
         await session.abortTransaction();
