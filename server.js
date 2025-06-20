@@ -59,7 +59,7 @@ io.use(async (socket, next) => {
             const decoded = jwt.verify(token, process.env.JWT_SECRET);
             const user = await User.findById(decoded.id).select('_id');
             if (user) {
-                socket.userId = user._id.toString(); // Anexa o ID do usuário ao socket
+                socket.userId = user._id.toString();
                 return next();
             }
         } catch (error) {
@@ -70,6 +70,8 @@ io.use(async (socket, next) => {
     return next(new Error('Authentication error'));
 });
 
+// Mapeamento em memória para rastrear jogadores por sala de jogo
+const gameRooms = {};
 
 io.on('connection', (socket) => {
     console.log(`🔌 Cliente conectado: ${socket.id} (Usuário: ${socket.userId})`);
@@ -86,7 +88,7 @@ io.on('connection', (socket) => {
         handleAcceptChallenge(io, socket, data);
     });
 
-    // ================== EVENTOS DO JOGO ==================
+    // ================== EVENTOS DO JOGO (VERSUS E GAME) ==================
     socket.on('joinGameRoom', async ({ gameId }) => {
         try {
             const game = await Game.findById(gameId);
@@ -98,15 +100,33 @@ io.on('connection', (socket) => {
             }
             
             socket.join(gameId);
-            console.log(`Usuário ${socket.userId} entrou na sala do jogo: ${gameId}`);
-            
-            // Notifica o outro jogador que o oponente se conectou
-            socket.to(gameId).emit('opponentConnected', { userId: socket.userId });
+
+            // Adiciona o jogador à sala no nosso mapeamento
+            if (!gameRooms[gameId]) gameRooms[gameId] = new Set();
+            gameRooms[gameId].add(socket.userId);
+
+            console.log(`Usuário ${socket.userId} entrou na sala do jogo: ${gameId}. Jogadores na sala: ${gameRooms[gameId].size}`);
+
+            // Envia o status atual da sala para TODOS na sala
+            const connectedUsers = Array.from(gameRooms[gameId]);
+            io.to(gameId).emit('roomStatus', { connectedUsers });
+
+            // Se SÓ UM jogador está na sala, inicia o cronômetro para ele
+            if (gameRooms[gameId].size === 1) {
+                socket.emit('startCountdown');
+            }
 
         } catch (error) {
             console.error(error);
             socket.emit('gameError', { message: 'Erro ao entrar na sala do jogo.' });
         }
+    });
+    
+    socket.on('playersReady', async ({ gameId }) => {
+        // Confirma no banco de dados que o jogo pode começar
+        await Game.findByIdAndUpdate(gameId, { status: 'ongoing' });
+        // Notifica todos na sala para irem para a tela de jogo
+        io.to(gameId).emit('startGame');
     });
 
     socket.on('makeMove', (data) => {
@@ -123,14 +143,27 @@ io.on('connection', (socket) => {
     });
 
     socket.on('cancelGameByTimeout', async ({ gameId }) => {
-        // Lógica a ser implementada: cancelar o jogo e devolver o dinheiro
         console.log(`Jogo ${gameId} cancelado por timeout.`);
         const game = await Game.findById(gameId);
-        if (game && game.status === 'waiting_players') {
-            game.status = 'cancelled';
-            await game.save();
-            // Lógica para devolver o dinheiro
-            io.to(gameId).emit('gameCancelled', { message: 'O oponente não se conectou a tempo. A partida foi cancelada.' });
+        if (game && (game.status === 'waiting_players' || game.status === 'ongoing')) {
+            // Devolve o dinheiro para os jogadores
+            const session = await mongoose.startSession();
+            session.startTransaction();
+            try {
+                for (const playerId of game.players) {
+                    await User.findByIdAndUpdate(playerId, { $inc: { balance: game.betAmount } }, { session });
+                }
+                game.status = 'cancelled';
+                game.endReason = 'timeout';
+                await game.save({ session });
+                await session.commitTransaction();
+                io.to(gameId).emit('gameCancelled', { message: 'O oponente não se conectou a tempo. A partida foi cancelada e o valor da aposta foi devolvido.' });
+            } catch (error) {
+                await session.abortTransaction();
+                console.error("Erro ao cancelar jogo por timeout:", error);
+            } finally {
+                session.endSession();
+            }
         }
     });
     
@@ -138,8 +171,19 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         console.log(`🔌 Cliente desconectado: ${socket.id} (Usuário: ${socket.userId})`);
         if (socket.userId) {
-            // Limpa o socketId do usuário no banco de dados para evitar enviar mensagens para sockets mortos
             User.findByIdAndUpdate(socket.userId, { socketId: null }).exec();
+            // Limpa o usuário das salas de jogo se ele desconectar
+            for (const gameId in gameRooms) {
+                if (gameRooms[gameId].has(socket.userId)) {
+                    gameRooms[gameId].delete(socket.userId);
+                    console.log(`Usuário ${socket.userId} removido da sala ${gameId}`);
+                    // Adicionar lógica aqui para lidar com abandono de partida em andamento
+                    if (gameRooms[gameId].size === 0) {
+                        delete gameRooms[gameId];
+                    }
+                    break;
+                }
+            }
         }
     });
 });
