@@ -89,9 +89,8 @@ const admin = (req, res, next) => {
     }
 };
 
-
 // =================================================================
-// --- 5. LÓGICA DO JOGO DE DAMAS BRASILEIRAS (PORTADA PARA O BACKEND) ---
+// --- 5. LÓGICA DO JOGO DE DAMAS BRASILEIRAS (BACKEND) ---
 // =================================================================
 const initializeBoard = () => {
     const board = Array(8).fill(null).map(() => Array(8).fill(null));
@@ -261,6 +260,7 @@ const handlePlayerMove = async (io, socket, data) => {
 };
 
 const finishGame = async (io, game, winnerId, loserId, reason) => {
+    if (game.status === 'finished') return; // Previne finalização dupla
     const session = await mongoose.startSession();
     session.startTransaction();
     try {
@@ -292,10 +292,11 @@ const finishGame = async (io, game, winnerId, loserId, reason) => {
         await session.commitTransaction();
         session.endSession();
 
+        const populatedGame = await Game.findById(game._id).populate('winner loser', 'username');
         io.to(game.id).emit('gameOver', {
-            winner: winner.username,
-            loser: loser.username,
-            reason: reason,
+            winner: populatedGame.winner.username,
+            loser: populatedGame.loser.username,
+            reason: populatedGame.endReason,
             prize: prize,
             platformFee: platformFee
         });
@@ -330,7 +331,7 @@ const handleAcceptChallenge = async (io, socket, data) => {
             player2: { id: challenger._id, color: 'black' },
             boardState: JSON.stringify(initializeBoard()),
             currentPlayer: creator._id,
-            status: 'waiting_players', // Muda para waiting_players
+            status: 'waiting_players',
             betAmount: lobby.betAmount,
         });
         await newGame.save({ session });
@@ -344,11 +345,9 @@ const handleAcceptChallenge = async (io, socket, data) => {
 
         io.to('lobby_room').emit('lobby_room_removed', lobbyId);
 
-        // Notifica ambos para irem para a tela de versus
         io.to(socket.id).emit('gameChallengeAccepted', { gameId: newGame._id });
-        const creatorSocket = io.sockets.sockets.get(creator.socketId); // Precisa armazenar socketId no user
-        if (creatorSocket) {
-            creatorSocket.emit('gameChallengeAccepted', { gameId: newGame._id });
+        if (creator.socketId) {
+            io.to(creator.socketId).emit('gameChallengeAccepted', { gameId: newGame._id });
         }
 
     } catch (error) {
@@ -508,10 +507,31 @@ const getGameHistory = asyncHandler(async (req, res) => {
 });
 
 const getGameDetails = asyncHandler(async (req, res) => {
-    const game = await Game.findById(req.params.id).populate('players', 'username avatar');
-    if (!game) { res.status(404); throw new Error("Jogo não encontrado."); }
+    const game = await Game.findById(req.params.id)
+        .populate({
+            path: 'players',
+            select: 'username avatar'
+        })
+        .populate({
+            path: 'player1.id',
+            select: 'username avatar'
+        })
+        .populate({
+            path: 'player2.id',
+            select: 'username avatar'
+        })
+        .populate({
+            path: 'winner',
+            select: 'username'
+        });
+
+    if (!game) { 
+        res.status(404);
+        throw new Error("Jogo não encontrado."); 
+    }
     if (!game.players.some(p => p._id.equals(req.user._id)) && req.user.role !== 'admin') {
-        res.status(403); throw new Error("Não autorizado.");
+        res.status(403);
+        throw new Error("Não autorizado a ver este jogo.");
     }
     res.json(game);
 });
