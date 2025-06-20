@@ -27,9 +27,14 @@ const UserSchema = new mongoose.Schema({
     stats: {
         wins: { type: Number, default: 0 },
         losses: { type: Number, default: 0 },
-        draws: { type: Number, default: 0 }, // Empates podem ser uma funcionalidade futura
+        draws: { type: Number, default: 0 },
         totalWinnings: { type: Number, default: 0 }
-    }
+    },
+    // ========================================================
+    // >>>>> ADIÇÃO NECESSÁRIA PARA O WEBSOCKET <<<<<
+    // ========================================================
+    socketId: { type: String, default: null } // Armazena o ID do socket ativo do usuário
+    
 }, { timestamps: true });
 
 // Middleware para hashear a senha antes de salvar
@@ -55,9 +60,9 @@ const User = mongoose.model('User', UserSchema);
 const LobbyRoomSchema = new mongoose.Schema({
     creator: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     betAmount: { type: Number, required: true, min: 1 },
-    status: { type: String, enum: ['waiting', 'full', 'playing', 'cancelled'], default: 'waiting' },
+    status: { type: String, enum: ['waiting', 'playing', 'cancelled'], default: 'waiting' },
     gameType: { type: String, enum: ['public', 'private'], default: 'public' },
-    privateCode: { type: String, unique: true, sparse: true }, // 'sparse' permite múltiplos nulos
+    privateCode: { type: String, unique: true, sparse: true },
     message: { type: String, maxlength: 100, default: '' },
     gameId: { type: mongoose.Schema.Types.ObjectId, ref: 'Game' }
 }, { timestamps: true });
@@ -69,16 +74,14 @@ const LobbyRoom = mongoose.model('LobbyRoom', LobbyRoomSchema);
 // =============================
 const GameSchema = new mongoose.Schema({
     players: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-    // player1 é sempre quem cria, player2 quem aceita
-    player1: { id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, color: { type: String, default: 'white' } }, // Peças de baixo no início
-    player2: { id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, color: { type: String, default: 'black' } }, // Peças de cima no início
-    
-    boardState: { type: String, required: true }, // Armazenado como JSON string
+    player1: { id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, color: { type: String, default: 'white' } },
+    player2: { id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, color: { type: String, default: 'black' } },
+    boardState: { type: String, required: true },
     currentPlayer: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     status: { type: String, enum: ['waiting_players', 'ongoing', 'finished', 'cancelled'], default: 'waiting_players' },
     winner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     loser: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
-    endReason: { type: String, enum: ['checkmate', 'resignation', 'timeout', 'no_pieces'], default: null }, // 'checkmate' aqui significa sem movimentos válidos
+    endReason: { type: String, enum: ['checkmate', 'resignation', 'timeout', 'no_pieces'], default: null },
     betAmount: { type: Number, required: true },
     platformFee: { type: Number, default: 0 },
     moves: [{
@@ -99,9 +102,9 @@ const DepositSchema = new mongoose.Schema({
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     amount: { type: Number, required: true },
     method: { type: String, enum: ['M-Pesa', 'e-Mola'], required: true },
-    transactionRef: { type: String, required: true }, // Mensagem de confirmação que o usuário cola
+    transactionRef: { type: String, required: true },
     status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
-    processedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' } // Admin que processou
+    processedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
 const Deposit = mongoose.model('Deposit', DepositSchema);
@@ -113,7 +116,7 @@ const WithdrawalSchema = new mongoose.Schema({
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     amount: { type: Number, required: true },
     method: { type: String, enum: ['M-Pesa', 'e-Mola'], required: true },
-    accountNumber: { type: String, required: true }, // Número para onde enviar o dinheiro
+    accountNumber: { type: String, required: true },
     status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
     processedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
@@ -124,7 +127,6 @@ const Withdrawal = mongoose.model('Withdrawal', WithdrawalSchema);
 // ESQUEMA DE CONFIGURAÇÃO DO ADMIN (ADMIN_SETTINGS)
 // =============================
 const AdminSettingsSchema = new mongoose.Schema({
-    // Usaremos um único documento para todas as configurações, encontrado por um nome fixo
     singleton: { type: String, default: 'main_settings', unique: true }, 
     minDeposit: { type: Number, default: 50 },
     maxDeposit: { type: Number, default: 10000 },
@@ -133,12 +135,8 @@ const AdminSettingsSchema = new mongoose.Schema({
     maxBet: { type: Number, default: 2500 },
     platformFeePercentage: { type: Number, default: 10, min: 0, max: 100 },
     paymentInstructions: {
-        mpesa: {
-            numbers: [{ number: String, instructions: String }],
-        },
-        emola: {
-            numbers: [{ number: String, instructions: String }],
-        }
+        mpesa: { numbers: [{ number: String, instructions: String }] },
+        emola: { numbers: [{ number: String, instructions: String }] }
     },
     platformTexts: {
         welcomeMessage: { type: String, default: 'Bem-vindo ao BrainSkill!' },
@@ -147,7 +145,6 @@ const AdminSettingsSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 const AdminSettings = mongoose.model('AdminSettings', AdminSettingsSchema);
-
 
 // Exportando todos os modelos
 module.exports = {
