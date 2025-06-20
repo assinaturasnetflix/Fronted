@@ -26,12 +26,7 @@ const transporter = nodemailer.createTransport({
     auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
 });
 
-// --- 3. FUNÇÕES HELPER E CONSTANTES DO JOGO ---
-
-const BOARD_SIZE = 8;
-const PLAYER_PIECES = { WHITE: 'w', BLACK: 'b' };
-const PLAYER_KINGS = { WHITE: 'W', BLACK: 'B' };
-
+// --- 3. FUNÇÕES HELPER ---
 const generateToken = (id) => {
     return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 };
@@ -61,8 +56,7 @@ const sendPasswordResetEmail = async (email, token, username) => {
     });
 };
 
-// --- 4. MIDDLEWARES DE AUTENTICAÇÃO E AUTORIZAÇÃO ---
-
+// --- 4. MIDDLEWARES ---
 const protect = asyncHandler(async (req, res, next) => {
     let token;
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
@@ -95,320 +89,177 @@ const admin = (req, res, next) => {
     }
 };
 
-// =================================================================
-// --- 5. LÓGICA DO JOGO DE DAMAS BRASILEIRAS (NÚCLEO) ---
-// =================================================================
 
+// =================================================================
+// --- 5. LÓGICA DO JOGO DE DAMAS BRASILEIRAS (PORTADA PARA O BACKEND) ---
+// =================================================================
 const initializeBoard = () => {
-    const board = Array(BOARD_SIZE).fill(null).map(() => Array(BOARD_SIZE).fill(null));
-    for (let i = 0; i < 3; i++) {
-        for (let j = 0; j < BOARD_SIZE; j++) {
-            if ((i + j) % 2 !== 0) board[i][j] = PLAYER_PIECES.BLACK; // Peças do oponente
-        }
-    }
-    for (let i = 5; i < BOARD_SIZE; i++) {
-        for (let j = 0; j < BOARD_SIZE; j++) {
-            if ((i + j) % 2 !== 0) board[i][j] = PLAYER_PIECES.WHITE; // Peças do jogador local
-        }
-    }
+    const board = Array(8).fill(null).map(() => Array(8).fill(null));
+    for (let r = 0; r < 3; r++) { for (let c = 0; c < 8; c++) { if ((r + c) % 2 !== 0) board[r][c] = 'b'; } }
+    for (let r = 5; r < 8; r++) { for (let c = 0; c < 8; c++) { if ((r + c) % 2 !== 0) board[r][c] = 'w'; } }
     return board;
 };
+const isValidSquare = (r, c) => r >= 0 && r < 8 && c >= 0 && c < 8;
 
-const isWithinBoard = (row, col) => row >= 0 && row < BOARD_SIZE && col >= 0 && col < BOARD_SIZE;
+function findAllPossibleMoves(board, playerColor) {
+    let allCaptures = [];
+    for (let r = 0; r < 8; r++) { for (let c = 0; c < 8; c++) {
+        const piece = board[r][c];
+        if (piece && piece.toLowerCase().startsWith(playerColor[0])) {
+            const sequences = findCaptureSequencesForPiece(board, r, c);
+            sequences.forEach(seq => allCaptures.push({ from: {row: r, col: c}, to: seq.path[seq.path.length-1], path: seq.path, captures: seq.captures }));
+        }
+    }}
+    if (allCaptures.length > 0) {
+        const max = Math.max(...allCaptures.map(m => m.captures.length));
+        return allCaptures.filter(m => m.captures.length === max);
+    }
+    let simpleMoves = [];
+    for (let r = 0; r < 8; r++) { for (let c = 0; c < 8; c++) {
+        const piece = board[r][c];
+        if (piece && piece.toLowerCase().startsWith(playerColor[0])) {
+            simpleMoves.push(...findSimpleMovesForPiece(board, r, c));
+        }
+    }}
+    return simpleMoves;
+}
 
-const getPlayerInfo = (piece) => {
-    if (!piece) return null;
-    const p = piece.toLowerCase();
-    return {
-        color: p === PLAYER_PIECES.WHITE ? 'white' : 'black',
-        isKing: p !== piece,
-    };
-};
-
-// Função RECURSIVA para encontrar todas as sequências de captura a partir de uma peça
-const findCaptureSequencesForPiece = (board, startRow, startCol, isKing, opponentColor, currentSequence) => {
-    const directions = isKing ? [[-1, -1], [-1, 1], [1, -1], [1, 1]] : [[-1, -1], [-1, 1], [1, -1], [1, 1]]; // Peão também captura para trás
+function findCaptureSequencesForPiece(board, r, c, path = [], captures = []) {
+    const piece = board[r][c]; if (!piece) return [];
     let finalSequences = [];
-    let madeCapture = false;
+    const playerColor = piece.toLowerCase().startsWith('w') ? 'white' : 'black';
+    const opponentColor = playerColor === 'white' ? 'black' : 'white';
+    const isKing = piece !== piece.toLowerCase();
 
-    for (const [dRow, dCol] of directions) {
+    for (const [dr, dc] of [[-1,-1], [-1,1], [1,-1], [1,1]]) {
         if (isKing) {
-            // Lógica para Dama (vôo)
-            for (let i = 1; ; i++) {
-                const opponentRow = startRow + i * dRow;
-                const opponentCol = startCol + i * dCol;
-                const landRow = startRow + (i + 1) * dRow;
-                const landCol = startCol + (i + 1) * dCol;
-
-                if (!isWithinBoard(opponentRow, opponentCol)) break; // Fora do tabuleiro
-                const opponentPiece = board[opponentRow][opponentCol];
-                if (opponentPiece && getPlayerInfo(opponentPiece).color !== opponentColor) break; // Bloqueado por peça amiga
-
-                if (opponentPiece && getPlayerInfo(opponentPiece).color === opponentColor) {
-                    if (isWithinBoard(landRow, landCol) && !board[landRow][landCol]) {
-                        // Salto válido encontrado. Simular o salto e continuar recursivamente.
-                        for(let j=1; ;j++){
-                            const newLandRow = opponentRow + j*dRow;
-                            const newLandCol = opponentCol + j*dCol;
-                            if(!isWithinBoard(newLandRow, newLandCol) || board[newLandRow][newLandCol]) break;
-
-                            madeCapture = true;
-                            const tempBoard = JSON.parse(JSON.stringify(board));
-                            tempBoard[opponentRow][opponentCol] = null;
-                            tempBoard[startRow][startCol] = null;
-                            tempBoard[newLandRow][newLandCol] = board[startRow][startCol];
-
-                            const newSequence = [...currentSequence, { row: newLandRow, col: newLandCol, captured: { row: opponentRow, col: opponentCol } }];
-                            const subSequences = findCaptureSequencesForPiece(tempBoard, newLandRow, newLandCol, isKing, opponentColor, newSequence);
-                            finalSequences.push(...subSequences);
+            for (let i = 1; i < 8; i++) {
+                const opponentR = r + dr * i, opponentC = c + dc * i;
+                if (!isValidSquare(opponentR, opponentC)) break;
+                const midPiece = board[opponentR][opponentC];
+                if (midPiece) {
+                    if (midPiece.toLowerCase().startsWith(opponentColor[0]) && !captures.some(cap => cap.row === opponentR && cap.col === opponentC)) {
+                        for (let j = 1; j < 8; j++) {
+                            const landR = opponentR + dr * j, landC = opponentC + dc * j;
+                            if (!isValidSquare(landR, landC) || board[landR][landC]) break;
+                            const newBoard = JSON.parse(JSON.stringify(board));
+                            newBoard[r][c] = null; newBoard[opponentR][opponentC] = null; newBoard[landR][landC] = piece;
+                            const newPath = [...path, { row: landR, col: landC }];
+                            const newCaptures = [...captures, { row: opponentR, col: opponentC }];
+                            const deeperSequences = findCaptureSequencesForPiece(newBoard, landR, landC, newPath, newCaptures);
+                            if(deeperSequences.length > 0) finalSequences.push(...deeperSequences); else finalSequences.push({ path: newPath, captures: newCaptures });
                         }
                     }
-                    break; // Parar de procurar nesta diagonal após encontrar um oponente
+                    break;
                 }
             }
-        } else {
-            // Lógica para Peão
-            const opponentRow = startRow + dRow;
-            const opponentCol = startCol + dCol;
-            const landRow = startRow + 2 * dRow;
-            const landCol = startCol + 2 * dCol;
-            
-            if (isWithinBoard(landRow, landCol) && board[landRow][landCol] === null) {
-                const piece = board[opponentRow][opponentCol];
-                if (piece && getPlayerInfo(piece).color === opponentColor) {
-                    madeCapture = true;
-                    const tempBoard = JSON.parse(JSON.stringify(board));
-                    tempBoard[opponentRow][opponentCol] = null;
-                    tempBoard[startRow][startCol] = null;
-                    tempBoard[landRow][landCol] = board[startRow][startCol];
-
-                    const newSequence = [...currentSequence, { row: landRow, col: landCol, captured: { row: opponentRow, col: opponentCol } }];
-                    const subSequences = findCaptureSequencesForPiece(tempBoard, landRow, landCol, isKing, opponentColor, newSequence);
-                    finalSequences.push(...subSequences);
+        } else { // Lógica do Peão
+            const opponentR = r + dr, opponentC = c + dc;
+            const landR = r + dr * 2, landC = c + dc * 2;
+            if (isValidSquare(landR, landC) && !board[landR][landC]) {
+                const midPiece = board[opponentR][opponentC];
+                if (midPiece && midPiece.toLowerCase().startsWith(opponentColor[0])) {
+                    const newBoard = JSON.parse(JSON.stringify(board));
+                    newBoard[r][c] = null; newBoard[opponentR][opponentC] = null; newBoard[landR][landC] = piece;
+                    const newPath = [...path, { row: landR, col: landC }];
+                    const newCaptures = [...captures, { row: opponentR, col: opponentC }];
+                    const deeperSequences = findCaptureSequencesForPiece(newBoard, landR, landC, newPath, newCaptures);
+                    if(deeperSequences.length > 0) finalSequences.push(...deeperSequences); else finalSequences.push({ path: newPath, captures: newCaptures });
                 }
             }
         }
     }
-    // Se nenhuma captura foi feita a partir desta posição, esta sequência termina aqui.
-    if (!madeCapture && currentSequence.length > 0) {
-        return [currentSequence];
-    }
     return finalSequences;
-};
+}
 
-// Função para encontrar todos os movimentos simples (sem captura)
-const findSimpleMovesForPiece = (board, startRow, startCol) => {
-    const piece = board[startRow][startCol];
-    const { color, isKing } = getPlayerInfo(piece);
-    const moves = [];
-    
-    let directions = [];
+function findSimpleMovesForPiece(board, r, c) {
+    const piece = board[r][c]; const moves = [];
+    const playerColor = piece.toLowerCase().startsWith('w') ? 'white' : 'black';
+    const isKing = piece !== piece.toLowerCase();
     if (isKing) {
-        directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
-    } else {
-        directions = color === 'white' ? [[-1, -1], [-1, 1]] : [[1, -1], [1, 1]];
-    }
-
-    for (const [dRow, dCol] of directions) {
-        if(isKing) {
-            for(let i=1; ; i++){
-                const newRow = startRow + i * dRow;
-                const newCol = startCol + i * dCol;
-                if (!isWithinBoard(newRow, newCol) || board[newRow][newCol] !== null) break;
-                moves.push({ from: {row: startRow, col: startCol}, to: {row: newRow, col: newCol }, captures: [] });
+        for (const [dr, dc] of [[-1,-1], [-1,1], [1,-1], [1,1]]) {
+            for (let i = 1; i < 8; i++) {
+                const newR = r + dr * i, newC = c + dc * i;
+                if (!isValidSquare(newR, newC) || board[newR][newC]) break;
+                moves.push({ from: {row: r, col: c}, to: {row: newR, col: newC}, path: [{row: newR, col: newC}], captures: [] });
             }
-        } else {
-            const newRow = startRow + dRow;
-            const newCol = startCol + dCol;
-            if (isWithinBoard(newRow, newCol) && board[newRow][newCol] === null) {
-                moves.push({ from: {row: startRow, col: startCol}, to: {row: newRow, col: newCol }, captures: [] });
+        }
+    } else {
+        const forwardDir = playerColor === 'white' ? -1 : 1;
+        for (const dc of [-1, 1]) {
+            const newR = r + forwardDir, newC = c + dc;
+            if (isValidSquare(newR, newC) && !board[newR][newC]) {
+                moves.push({ from: {row: r, col: c}, to: {row: newR, col: newC}, path: [{row: newR, col: newC}], captures: [] });
             }
         }
     }
     return moves;
-};
-
-
-// Função principal para obter TODOS os movimentos válidos para um jogador
-const getAllValidMoves = (board, playerColor) => {
-    let allCaptures = [];
-    const opponentColor = playerColor === 'white' ? 'black' : 'white';
-
-    // 1. Encontrar todas as sequências de captura possíveis
-    for (let r = 0; r < BOARD_SIZE; r++) {
-        for (let c = 0; c < BOARD_SIZE; c++) {
-            const piece = board[r][c];
-            if (piece && getPlayerInfo(piece).color === playerColor) {
-                const { isKing } = getPlayerInfo(piece);
-                const sequences = findCaptureSequencesForPiece(board, r, c, isKing, opponentColor, []);
-                if (sequences.length > 0) {
-                    allCaptures.push(...sequences.map(seq => ({ from: {row: r, col: c}, to: seq[seq.length - 1], captures: seq.map(s => s.captured) })));
-                }
-            }
-        }
-    }
-
-    // 2. Aplicar a "Lei da Maioria": se houver capturas, apenas as mais longas são válidas.
-    if (allCaptures.length > 0) {
-        let maxCaptures = 0;
-        for (const move of allCaptures) {
-            if (move.captures.length > maxCaptures) {
-                maxCaptures = move.captures.length;
-            }
-        }
-        return allCaptures.filter(move => move.captures.length === maxCaptures);
-    }
-
-    // 3. Se não houver capturas, encontrar todos os movimentos simples
-    let allSimpleMoves = [];
-    for (let r = 0; r < BOARD_SIZE; r++) {
-        for (let c = 0; c < BOARD_SIZE; c++) {
-            const piece = board[r][c];
-            if (piece && getPlayerInfo(piece).color === playerColor) {
-                allSimpleMoves.push(...findSimpleMovesForPiece(board, r, c));
-            }
-        }
-    }
-    return allSimpleMoves;
-};
+}
 
 // =================================================================
-// --- 6. HANDLERS DE SOCKET.IO PARA JOGABILIDADE ---
+// --- 6. HANDLERS DE SOCKET.IO E API ---
 // =================================================================
 
-/**
- * Lida com um jogador aceitando um desafio no lobby.
- * Cria o jogo, debita saldos e notifica ambos os jogadores.
- */
-const handleAcceptChallenge = async (io, data) => {
-    const { lobbyRoomId, challengerId } = data;
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    try {
-        const lobby = await LobbyRoom.findById(lobbyRoomId).session(session);
-        if (!lobby || lobby.status !== 'waiting') {
-            throw new Error("Esta aposta já não está disponível.");
-        }
-
-        const creator = await User.findById(lobby.creator).session(session);
-        const challenger = await User.findById(challengerId).session(session);
-
-        if (challenger.balance < lobby.betAmount) {
-            throw new Error("Saldo insuficiente para aceitar esta aposta.");
-        }
-        
-        // Debita o valor da aposta do desafiante (o do criador já foi debitado na criação do lobby)
-        challenger.balance -= lobby.betAmount;
-        await challenger.save({ session });
-
-        // Cria o jogo
-        const newGame = new Game({
-            players: [creator._id, challenger._id],
-            player1: { id: creator._id, color: 'white' },
-            player2: { id: challenger._id, color: 'black' },
-            boardState: JSON.stringify(initializeBoard()),
-            currentPlayer: creator._id,
-            status: 'ongoing',
-            betAmount: lobby.betAmount,
-        });
-        await newGame.save({ session });
-
-        lobby.status = 'playing';
-        lobby.gameId = newGame._id;
-        await lobby.save({ session });
-
-        await session.commitTransaction();
-
-        // Notifica o lobby para remover a sala
-        io.to('lobby_room').emit('lobby_room_removed', lobbyRoomId);
-
-        // Notifica ambos os jogadores para começarem o jogo
-        io.to(creator.socketId).emit('gameStarted', { gameId: newGame._id });
-        io.to(challenger.socketId).emit('gameStarted', { gameId: newGame._id });
-
-    } catch (error) {
-        await session.abortTransaction();
-        // TODO: Notificar o usuário do erro via socket
-        console.error("Erro ao aceitar desafio:", error.message);
-    } finally {
-        session.endSession();
-    }
-};
-
-/**
- * Lida com uma jogada feita por um jogador.
- * Valida o movimento, atualiza o estado do jogo e notifica os jogadores.
- */
-const handlePlayerMove = async (io, data) => {
-    const { gameId, userId, move } = data; // move: { from: {row, col}, to: {row, col} }
+const handlePlayerMove = async (io, socket, data) => {
+    const { gameId, move } = data;
+    const userId = socket.userId;
 
     try {
         const game = await Game.findById(gameId);
-        if (!game || game.status !== 'ongoing') return;
+        if (!game || game.status !== 'ongoing') throw new Error("Jogo não encontrado ou finalizado.");
         if (game.currentPlayer.toString() !== userId) throw new Error("Não é a sua vez de jogar.");
 
         const board = JSON.parse(game.boardState);
-        const playerColor = game.player1.id.equals(userId) ? game.player1.color : game.player2.color;
+        const playerColor = game.player1.id.equals(userId) ? 'white' : 'black';
         
-        const validMoves = getAllValidMoves(board, playerColor);
-        const receivedMove = validMoves.find(
+        const possibleMoves = findAllPossibleMoves(board, playerColor);
+        const receivedMove = possibleMoves.find(
             m => m.from.row === move.from.row && m.from.col === move.from.col && m.to.row === move.to.row && m.to.col === move.to.col
         );
 
         if (!receivedMove) throw new Error("Movimento inválido.");
-
-        // Atualizar o tabuleiro
-        const piece = board[move.from.row][move.from.col];
-        board[move.from.row][move.from.col] = null;
         
-        // Promoção a Dama
+        const piece = board[receivedMove.from.row][receivedMove.from.col];
+        board[receivedMove.from.row][receivedMove.from.col] = null;
+        receivedMove.captures.forEach(cap => board[cap.row][cap.col] = null);
+        
         let promoted = false;
-        if ((playerColor === 'white' && move.to.row === 0) || (playerColor === 'black' && move.to.row === BOARD_SIZE - 1)) {
-            board[move.to.row][move.to.col] = playerColor === 'white' ? PLAYER_KINGS.WHITE : PLAYER_KINGS.BLACK;
-            promoted = true;
+        if ((playerColor === 'white' && receivedMove.to.row === 0) || (playerColor === 'black' && receivedMove.to.row === 7)) {
+            if (piece === piece.toLowerCase()) {
+                promoted = true;
+                board[receivedMove.to.row][receivedMove.to.col] = piece.toUpperCase();
+            } else {
+                 board[receivedMove.to.row][receivedMove.to.col] = piece;
+            }
         } else {
-            board[move.to.row][move.to.col] = piece;
+            board[receivedMove.to.row][receivedMove.to.col] = piece;
         }
 
-        // Remover peças capturadas
-        for (const captured of receivedMove.captures) {
-            board[captured.row][captured.col] = null;
-        }
-
-        // Salvar estado
         game.boardState = JSON.stringify(board);
-        game.moves.push({ player: userId, from: move.from, to: move.to, capturedPieces: receivedMove.captures });
+        game.moves.push({ player: userId, from: receivedMove.from, to: receivedMove.to, capturedPieces: receivedMove.captures });
         const opponentId = game.players.find(p => !p.equals(userId));
         game.currentPlayer = opponentId;
 
-        // Verificar condição de fim de jogo
         const opponentColor = playerColor === 'white' ? 'black' : 'white';
-        const opponentValidMoves = getAllValidMoves(board, opponentColor);
-        
-        const opponentPieces = board.flat().filter(p => p && getPlayerInfo(p).color === opponentColor);
+        const opponentMoves = findAllPossibleMoves(board, opponentColor);
+        const opponentPieceCount = board.flat().filter(p => p && p.toLowerCase().startsWith(opponentColor[0])).length;
 
-        if (opponentValidMoves.length === 0 || opponentPieces.length === 0) {
-            // Jogo terminado!
-            await finishGame(io, game, userId, opponentId, opponentPieces.length === 0 ? 'no_pieces' : 'checkmate');
+        if (opponentMoves.length === 0 || opponentPieceCount === 0) {
+            await finishGame(io, game, userId, opponentId, opponentMoves.length === 0 ? 'checkmate' : 'no_pieces');
         } else {
             await game.save();
             io.to(gameId).emit('moveMade', {
-                newBoardState: board,
-                lastMove: move,
-                nextPlayer: opponentId,
-                capturedPieces: receivedMove.captures,
-                promoted
+                boardState: game.boardState,
+                lastMove: receivedMove,
+                currentPlayer: game.currentPlayer
             });
         }
     } catch (error) {
         console.error("Erro na jogada:", error.message);
-        // io.to(socket.id).emit('error', { message: error.message });
+        socket.emit('gameError', { message: error.message });
     }
 };
 
-/**
- * Finaliza o jogo, distribui prêmios e atualiza estatísticas.
- */
 const finishGame = async (io, game, winnerId, loserId, reason) => {
     const session = await mongoose.startSession();
     session.startTransaction();
@@ -420,20 +271,17 @@ const finishGame = async (io, game, winnerId, loserId, reason) => {
         const platformFee = totalPot * feePercentage;
         const prize = totalPot - platformFee;
 
-        // Atualizar dados do jogo
         game.status = 'finished';
         game.winner = winnerId;
         game.loser = loserId;
         game.endReason = reason;
         game.platformFee = platformFee;
 
-        // Atualizar vencedor
         const winner = await User.findById(winnerId).session(session);
         winner.balance += prize;
         winner.stats.wins += 1;
-        winner.stats.totalWinnings += (prize - game.betAmount); // Ganhos líquidos
+        winner.stats.totalWinnings += (prize - game.betAmount);
 
-        // Atualizar perdedor
         const loser = await User.findById(loserId).session(session);
         loser.stats.losses += 1;
         
@@ -442,6 +290,7 @@ const finishGame = async (io, game, winnerId, loserId, reason) => {
         await loser.save({ session });
         
         await session.commitTransaction();
+        session.endSession();
 
         io.to(game.id).emit('gameOver', {
             winner: winner.username,
@@ -453,114 +302,147 @@ const finishGame = async (io, game, winnerId, loserId, reason) => {
 
     } catch (error) {
         await session.abortTransaction();
-        console.error("Erro ao finalizar jogo:", error.message);
-    } finally {
         session.endSession();
+        console.error("Erro ao finalizar jogo:", error.message);
     }
 };
 
-// ... (Restante dos controladores da API REST permanecem os mesmos) ...
+const handleAcceptChallenge = async (io, socket, data) => {
+    const { lobbyId } = data;
+    const challengerId = socket.userId;
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    try {
+        const lobby = await LobbyRoom.findById(lobbyId).session(session);
+        if (!lobby || lobby.status !== 'waiting') throw new Error("Aposta não disponível.");
+        if (lobby.creator.equals(challengerId)) throw new Error("Não pode jogar contra si mesmo.");
 
-// --- 7. CONTROLADORES DE AUTENTICAÇÃO E USUÁRIO ---
+        const creator = await User.findById(lobby.creator).session(session);
+        const challenger = await User.findById(challengerId).session(session);
+        if (challenger.balance < lobby.betAmount) throw new Error("Saldo insuficiente.");
+        
+        challenger.balance -= lobby.betAmount;
+        await challenger.save({ session });
+
+        const newGame = new Game({
+            players: [creator._id, challenger._id],
+            player1: { id: creator._id, color: 'white' },
+            player2: { id: challenger._id, color: 'black' },
+            boardState: JSON.stringify(initializeBoard()),
+            currentPlayer: creator._id,
+            status: 'waiting_players', // Muda para waiting_players
+            betAmount: lobby.betAmount,
+        });
+        await newGame.save({ session });
+
+        lobby.status = 'playing';
+        lobby.gameId = newGame._id;
+        await lobby.save({ session });
+
+        await session.commitTransaction();
+        session.endSession();
+
+        io.to('lobby_room').emit('lobby_room_removed', lobbyId);
+
+        // Notifica ambos para irem para a tela de versus
+        io.to(socket.id).emit('gameChallengeAccepted', { gameId: newGame._id });
+        const creatorSocket = io.sockets.sockets.get(creator.socketId); // Precisa armazenar socketId no user
+        if (creatorSocket) {
+            creatorSocket.emit('gameChallengeAccepted', { gameId: newGame._id });
+        }
+
+    } catch (error) {
+        await session.abortTransaction();
+        session.endSession();
+        console.error("Erro ao aceitar desafio:", error.message);
+        socket.emit('gameError', { message: error.message });
+    }
+};
+
+// --- 7. CONTROLADORES DE API REST ---
 const registerUser = asyncHandler(async (req, res) => {
     const { username, email, password } = req.body;
-    if (!username || !email || !password) {
-        res.status(400); throw new Error('Por favor, preencha todos os campos.');
-    }
+    if (!username || !email || !password) { res.status(400); throw new Error('Por favor, preencha todos os campos.'); }
     const userExists = await User.findOne({ $or: [{ email }, { username }] });
-    if (userExists) {
-        res.status(400); throw new Error('Utilizador com este email ou nome de utilizador já existe.');
-    }
+    if (userExists) { res.status(400); throw new Error('Utilizador com este email ou nome de utilizador já existe.'); }
     const user = await User.create({ username, email, password });
     if (user) {
         res.status(201).json({
-            _id: user._id, username: user.username, email: user.email, avatar: user.avatar.url, balance: user.balance, token: generateToken(user._id),
+            _id: user._id, username: user.username, email: user.email,
+            avatar: user.avatar, balance: user.balance, token: generateToken(user._id),
         });
-    } else {
-        res.status(400); throw new Error('Dados de utilizador inválidos.');
-    }
+    } else { res.status(400); throw new Error('Dados de utilizador inválidos.'); }
 });
+
 const loginUser = asyncHandler(async (req, res) => {
     const { email, password } = req.body;
     const user = await User.findOne({ email });
     if (user && (await user.matchPassword(password))) {
-        if (user.isBlocked) {
-            res.status(403); throw new Error('Esta conta foi bloqueada por um administrador.');
-        }
+        if (user.isBlocked) { res.status(403); throw new Error('Esta conta foi bloqueada.'); }
         res.json({
-            _id: user._id, username: user.username, email: user.email, role: user.role, avatar: user.avatar.url, balance: user.balance, token: generateToken(user._id),
+            _id: user._id, username: user.username, email: user.email,
+            role: user.role, avatar: user.avatar.url, balance: user.balance, token: generateToken(user._id),
         });
-    } else {
-        res.status(401); throw new Error('Email ou senha inválidos.');
-    }
+    } else { res.status(401); throw new Error('Email ou senha inválidos.'); }
 });
+
 const forgotPassword = asyncHandler(async (req, res) => {
     const { email } = req.body;
     const user = await User.findOne({ email });
-    if (!user) {
-        res.status(404); throw new Error('Utilizador não encontrado.');
-    }
+    if (!user) { res.status(404); throw new Error('Utilizador não encontrado.'); }
     const resetToken = crypto.randomBytes(4).toString('hex').toUpperCase();
     user.resetPasswordToken = crypto.createHash('sha256').update(resetToken).digest('hex');
     user.resetPasswordExpires = Date.now() + 15 * 60 * 1000;
     await user.save();
     try {
         await sendPasswordResetEmail(user.email, resetToken, user.username);
-        res.json({ message: 'Email de recuperação enviado com sucesso.' });
+        res.json({ message: 'Email de recuperação enviado.' });
     } catch (error) {
         user.resetPasswordToken = undefined;
         user.resetPasswordExpires = undefined;
         await user.save();
-        res.status(500); throw new Error('Erro ao enviar o email de recuperação.');
+        res.status(500); throw new Error('Erro ao enviar o email.');
     }
 });
+
 const resetPassword = asyncHandler(async (req, res) => {
     const { token, password } = req.body;
     const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
-    const user = await User.findOne({
-        resetPasswordToken: hashedToken,
-        resetPasswordExpires: { $gt: Date.now() },
-    });
-    if (!user) {
-        res.status(400); throw new Error('Código inválido ou expirado.');
-    }
+    const user = await User.findOne({ resetPasswordToken: hashedToken, resetPasswordExpires: { $gt: Date.now() } });
+    if (!user) { res.status(400); throw new Error('Código inválido ou expirado.'); }
     user.password = password;
     user.resetPasswordToken = undefined;
     user.resetPasswordExpires = undefined;
     await user.save();
     res.json({ message: 'Senha redefinida com sucesso.' });
 });
-const getUserProfile = asyncHandler(async (req, res) => {
-    res.json(req.user);
-});
+
+const getUserProfile = asyncHandler(async (req, res) => { res.json(req.user); });
+
 const updateUserProfile = asyncHandler(async (req, res) => {
-    const { username, bio, mpesaNumber, emolaNumber } = req.body;
     const user = await User.findById(req.user._id);
     if (user) {
-        user.username = username || user.username;
-        user.bio = bio !== undefined ? bio : user.bio;
-        user.paymentInfo.mpesaNumber = mpesaNumber || user.paymentInfo.mpesaNumber;
-        user.paymentInfo.emolaNumber = emolaNumber || user.paymentInfo.emolaNumber;
+        user.username = req.body.username || user.username;
+        user.bio = req.body.bio !== undefined ? req.body.bio : user.bio;
+        user.paymentInfo.mpesaNumber = req.body.mpesaNumber || user.paymentInfo.mpesaNumber;
+        user.paymentInfo.emolaNumber = req.body.emolaNumber || user.paymentInfo.emolaNumber;
         const updatedUser = await user.save();
         res.json({
-            _id: updatedUser._id, username: updatedUser.username, email: updatedUser.email, avatar: updatedUser.avatar.url, bio: updatedUser.bio, paymentInfo: updatedUser.paymentInfo
+            _id: updatedUser._id, username: updatedUser.username, email: updatedUser.email,
+            avatar: updatedUser.avatar, bio: updatedUser.bio, paymentInfo: updatedUser.paymentInfo
         });
-    } else {
-        res.status(404); throw new Error('Utilizador não encontrado.');
-    }
+    } else { res.status(404); throw new Error('Utilizador não encontrado.'); }
 });
+
 const uploadAvatar = asyncHandler(async (req, res) => {
-    if (!req.file) {
-        res.status(400); throw new Error('Nenhum ficheiro de imagem foi enviado.');
-    }
+    if (!req.file) { res.status(400); throw new Error('Nenhum ficheiro de imagem foi enviado.'); }
     const user = await User.findById(req.user._id);
     if (user.avatar.public_id && user.avatar.public_id !== 'sample') {
         await cloudinary.uploader.destroy(user.avatar.public_id);
     }
     const result = await new Promise((resolve, reject) => {
         const uploadStream = cloudinary.uploader.upload_stream({ folder: "brainskill_avatars" }, (error, result) => {
-            if (error) reject(error);
-            resolve(result);
+            if (error) reject(error); else resolve(result);
         });
         uploadStream.end(req.file.buffer);
     });
@@ -569,23 +451,17 @@ const uploadAvatar = asyncHandler(async (req, res) => {
     await user.save();
     res.json({ message: 'Avatar atualizado com sucesso!', url: result.secure_url });
 });
+
 const getPublicProfile = asyncHandler(async (req, res) => {
     const user = await User.findOne({ username: req.params.username }).select('-password -email -paymentInfo -balance -role -resetPasswordToken -resetPasswordExpires');
-    if (user) {
-        res.json(user);
-    } else {
-        res.status(404); throw new Error('Utilizador não encontrado.');
-    }
+    if (user) res.json(user); else { res.status(404); throw new Error('Utilizador não encontrado.'); }
 });
+
 const getRanking = asyncHandler(async (req, res) => {
-    const users = await User.find({ role: 'user' })
-        .sort({ 'stats.totalWinnings': -1 })
-        .limit(100)
-        .select('username avatar stats.wins stats.losses stats.totalWinnings');
+    const users = await User.find({ role: 'user' }).sort({ 'stats.totalWinnings': -1 }).limit(100).select('username avatar stats.wins stats.losses stats.totalWinnings');
     res.json(users);
 });
 
-// --- 8. CONTROLADORES DE LOBBY E JOGO (API REST) ---
 const createLobbyRoom = asyncHandler(async (req, res) => {
     const { betAmount, gameType, privateCode, message } = req.body;
     const session = await mongoose.startSession();
@@ -593,25 +469,20 @@ const createLobbyRoom = asyncHandler(async (req, res) => {
     try {
         const user = await User.findById(req.user._id).session(session);
         const settings = await AdminSettings.findOne({ singleton: 'main_settings' }).session(session);
-        if (!betAmount || betAmount <= 0) throw new Error("O valor da aposta deve ser positivo.");
-        if (settings && betAmount > settings.maxBet) throw new Error(`O valor máximo da aposta é ${settings.maxBet} MT.`);
-        if (user.balance < betAmount) throw new Error('Saldo insuficiente para criar esta aposta.');
-        
-        user.balance -= betAmount; // Escrow
+        if (!betAmount || betAmount <= 0) throw new Error("Aposta deve ser positiva.");
+        if (settings && betAmount > settings.maxBet) throw new Error(`Aposta máxima é ${settings.maxBet} MT.`);
+        if (user.balance < betAmount) throw new Error('Saldo insuficiente.');
+        user.balance -= betAmount;
         await user.save({ session });
-
         const lobbyData = { creator: req.user._id, betAmount, gameType, message };
         if (gameType === 'private') {
-            if(!privateCode) throw new Error('Jogos privados requerem um código.');
+            if(!privateCode) throw new Error('Jogos privados requerem código.');
             lobbyData.privateCode = privateCode;
         }
         const newLobby = (await LobbyRoom.create([lobbyData], { session }))[0];
         await session.commitTransaction();
-
         const populatedLobby = await newLobby.populate('creator', 'username avatar');
-        
-        const io = req.app.get('socketio');
-        io.to('lobby_room').emit('new_lobby_room', populatedLobby);
+        req.app.get('socketio').to('lobby_room').emit('new_lobby_room', populatedLobby);
         res.status(201).json(populatedLobby);
     } catch (error) {
         await session.abortTransaction();
@@ -620,67 +491,71 @@ const createLobbyRoom = asyncHandler(async (req, res) => {
         session.endSession();
     }
 });
+
 const getPublicLobbies = asyncHandler(async (req, res) => {
     const lobbies = await LobbyRoom.find({ status: 'waiting', gameType: 'public' }).populate('creator', 'username avatar').sort({ createdAt: -1 });
     res.json(lobbies);
 });
+
 const findPrivateLobbyByCode = asyncHandler(async (req, res) => {
     const lobby = await LobbyRoom.findOne({ privateCode: req.params.code, status: 'waiting' }).populate('creator', 'username avatar');
-    if(lobby) res.json(lobby);
-    else res.status(404).json({ message: 'Nenhum jogo privado encontrado com este código.'});
+    if(lobby) res.json(lobby); else res.status(404).json({ message: 'Nenhum jogo encontrado com este código.'});
 });
+
 const getGameHistory = asyncHandler(async (req, res) => {
     const games = await Game.find({ players: req.user._id, status: 'finished' }).populate('players', 'username avatar').sort({ updatedAt: -1 });
     res.json(games);
 });
+
 const getGameDetails = asyncHandler(async (req, res) => {
     const game = await Game.findById(req.params.id).populate('players', 'username avatar');
     if (!game) { res.status(404); throw new Error("Jogo não encontrado."); }
     if (!game.players.some(p => p._id.equals(req.user._id)) && req.user.role !== 'admin') {
-        res.status(403); throw new Error("Não autorizado a ver este jogo.");
+        res.status(403); throw new Error("Não autorizado.");
     }
     res.json(game);
 });
+
 const getActiveGameNotification = asyncHandler(async (req, res) => {
     const activeGame = await Game.findOne({ players: req.user._id, status: 'ongoing' });
-    if(activeGame) res.json({ hasActiveGame: true, gameId: activeGame._id });
-    else res.json({ hasActiveGame: false });
+    if(activeGame) res.json({ hasActiveGame: true, gameId: activeGame._id }); else res.json({ hasActiveGame: false });
 });
 
-// --- 9. CONTROLADORES DE TRANSAÇÕES FINANCEIRAS ---
 const requestDeposit = asyncHandler(async (req, res) => {
     const { amount, method, transactionRef } = req.body;
     const settings = await AdminSettings.findOne({ singleton: 'main_settings' });
-    if (!amount || !method || !transactionRef) { res.status(400); throw new Error("Todos os campos são obrigatórios."); }
+    if (!amount || !method || !transactionRef) { res.status(400); throw new Error("Campos obrigatórios."); }
     if (settings && (amount < settings.minDeposit || amount > settings.maxDeposit)) {
-        res.status(400); throw new Error(`O valor do depósito deve estar entre ${settings.minDeposit} e ${settings.maxDeposit} MT.`);
+        res.status(400); throw new Error(`Depósito entre ${settings.minDeposit} e ${settings.maxDeposit} MT.`);
     }
     const deposit = await Deposit.create({ user: req.user._id, amount, method, transactionRef });
-    res.status(201).json({ message: 'Pedido de depósito enviado com sucesso.', deposit });
+    res.status(201).json({ message: 'Pedido de depósito enviado.', deposit });
 });
+
 const requestWithdrawal = asyncHandler(async (req, res) => {
     const { amount, method, accountNumber } = req.body;
     const user = await User.findById(req.user._id);
     const settings = await AdminSettings.findOne({ singleton: 'main_settings' });
-    if (!amount || !method || !accountNumber) { res.status(400); throw new Error("Todos os campos são obrigatórios."); }
+    if (!amount || !method || !accountNumber) { res.status(400); throw new Error("Campos obrigatórios."); }
     if (settings && (amount < settings.minWithdrawal || amount > settings.maxWithdrawal)) {
-        res.status(400); throw new Error(`O valor do levantamento deve estar entre ${settings.minWithdrawal} e ${settings.maxWithdrawal} MT.`);
+        res.status(400); throw new Error(`Levantamento entre ${settings.minWithdrawal} e ${settings.maxWithdrawal} MT.`);
     }
-    if (user.balance < amount) { res.status(400); throw new Error("Saldo insuficiente para este levantamento."); }
+    if (user.balance < amount) { res.status(400); throw new Error("Saldo insuficiente."); }
     user.balance -= amount;
     await user.save();
     const withdrawal = await Withdrawal.create({ user: req.user._id, amount, method, accountNumber });
-    res.status(201).json({ message: 'Pedido de levantamento enviado com sucesso.', withdrawal });
+    res.status(201).json({ message: 'Pedido de levantamento enviado.', withdrawal });
 });
+
 const getTransactionHistory = asyncHandler(async (req, res) => {
     const deposits = await Deposit.find({ user: req.user._id }).sort({ createdAt: -1 });
     const withdrawals = await Withdrawal.find({ user: req.user._id }).sort({ createdAt: -1 });
     res.json({ deposits, withdrawals });
 });
+
 const getPaymentInstructions = asyncHandler(async (req, res) => {
     const settings = await AdminSettings.findOne({ singleton: 'main_settings' }).select('paymentInstructions');
-    if(settings) res.json(settings.paymentInstructions);
-    else res.status(404).json({ message: "Instruções de pagamento não configuradas."});
+    if(settings) res.json(settings.paymentInstructions); else res.status(404).json({ message: "Instruções não configuradas."});
 });
 
 // --- 10. CONTROLADORES DE ADMINISTRAÇÃO ---
@@ -690,7 +565,7 @@ const adminGetAllUsers = asyncHandler(async (req, res) => {
 });
 const adminToggleUserBlock = asyncHandler(async (req, res) => {
     const user = await User.findById(req.params.id);
-    if(user){ user.isBlocked = !user.isBlocked; await user.save(); res.json({ message: `Utilizador ${user.isBlocked ? 'bloqueado' : 'desbloqueado'}.` });} 
+    if(user){ user.isBlocked = !user.isBlocked; await user.save(); res.json({ message: `Utilizador ${user.isBlocked ? 'bloqueado' : 'desbloqueado'}.` });}
     else { res.status(404); throw new Error('Utilizador não encontrado.'); }
 });
 const adminAdjustUserBalance = asyncHandler(async (req, res) => {
@@ -712,9 +587,7 @@ const adminProcessDeposit = asyncHandler(async (req, res) => {
         user.balance += deposit.amount;
         await user.save();
         deposit.status = 'approved';
-    } else {
-        deposit.status = 'rejected';
-    }
+    } else { deposit.status = 'rejected'; }
     deposit.processedBy = req.user._id;
     await deposit.save();
     res.json({ message: `Depósito ${status}.`, deposit });
@@ -727,9 +600,8 @@ const adminProcessWithdrawal = asyncHandler(async (req, res) => {
     const { status } = req.body;
     const withdrawal = await Withdrawal.findById(req.params.id);
     if (!withdrawal || withdrawal.status !== 'pending') { res.status(400); throw new Error('Pedido não encontrado ou já processado.'); }
-    if (status === 'approved') {
-        withdrawal.status = 'approved';
-    } else {
+    if (status === 'approved') { withdrawal.status = 'approved'; }
+    else {
         const user = await User.findById(withdrawal.user);
         user.balance += withdrawal.amount;
         await user.save();
@@ -759,14 +631,10 @@ const adminUpdateSettings = asyncHandler(async (req, res) => {
     res.json({ message: "Configurações atualizadas.", settings });
 });
 
-
 // --- 11. EXPORTAÇÕES ---
 module.exports = {
-    // Middlewares
     protect, admin,
-    // Handlers de Socket.IO
     handleAcceptChallenge, handlePlayerMove, finishGame,
-    // Controladores API REST
     registerUser, loginUser, forgotPassword, resetPassword, getUserProfile, updateUserProfile, uploadAvatar, getPublicProfile, getRanking,
     createLobbyRoom, getPublicLobbies, findPrivateLobbyByCode, getGameHistory, getGameDetails, getActiveGameNotification,
     requestDeposit, requestWithdrawal, getTransactionHistory, getPaymentInstructions,
