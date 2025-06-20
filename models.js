@@ -30,11 +30,7 @@ const UserSchema = new mongoose.Schema({
         draws: { type: Number, default: 0 },
         totalWinnings: { type: Number, default: 0 }
     },
-    // ========================================================
-    // >>>>> ADIÇÃO NECESSÁRIA PARA O WEBSOCKET <<<<<
-    // ========================================================
-    socketId: { type: String, default: null } // Armazena o ID do socket ativo do usuário
-    
+    socketId: { type: String, default: null }
 }, { timestamps: true });
 
 // Middleware para hashear a senha antes de salvar
@@ -81,7 +77,11 @@ const GameSchema = new mongoose.Schema({
     status: { type: String, enum: ['waiting_players', 'ongoing', 'finished', 'cancelled'], default: 'waiting_players' },
     winner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     loser: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
-    endReason: { type: String, enum: ['checkmate', 'resignation', 'timeout', 'no_pieces'], default: null },
+    endReason: { 
+        type: String, 
+        enum: ['checkmate', 'resignation', 'timeout', 'no_pieces', null], 
+        default: null 
+    },
     betAmount: { type: Number, required: true },
     platformFee: { type: Number, default: 0 },
     moves: [{
